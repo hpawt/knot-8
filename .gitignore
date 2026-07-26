@@ -1,0 +1,39 @@
+# Local builds and FPGA tool databases
+/build/
+db/
+incremental_db/
+output_files/
+simulation/
+
+# Bundled/local toolchains and recovery utilities
+/tools/iverilog/
+/tools/toolchain-cache/
+/usb_blaster_recovery/
+
+# Third-party board vendor material
+/board_reference/
+
+# Python and editor caches
+__pycache__/
+*.py[cod]
+*.qws
+*.bak
+
+# Quartus-generated reports and metadata
+*.cdf
+*.done
+*.jdi
+*.pin
+*.rpt
+*.smsg
+*.summary
+
+# Historical local snapshots (kept locally, not published)
+/releases/risc8-v1/
+/releases/risc8-v2/
+/releases/knot8-v3/
+/releases/tp2bc-v0.1/
+/releases/tp2bc-v0.2/
+
+# Superseded v3 demo artifacts
+**/programs/knot8_v3_demo.*

@@ -1,0 +1,24 @@
+0000  C8 80         LOADI_H 0x80
+0002  CC 00         LOADI_L 0x00
+0004  40 0A         LOADI   R0, 0x0A
+0006  C4 00         STORE   R0, [IDX]
+0008  08 00         SWAPXY                  ; IDY=0x8000, IDX=0
+000A  C8 FF         LOADI_H 0xFF
+000C  CC 00         LOADI_L 0x00            ; IDX=LED MMIO, IDY=tape cell
+000E  08 00         SWAPXY                  ; IDX=tape cell, IDY=LED MMIO
+0010  3C 00         INC_MEM [IDX]
+0012  C0 00         LOAD    R0, [IDX]
+0014  41 00         LOADI   R1, 0
+0016  58 0B         CMPI    R0, 0x0B        ; compare R1:R0 with 0x000B
+0018  79 00         CPCI    R1, 0
+001A  E8 12         BRNZ    done
+001C  08 00         SWAPXY                  ; IDX=LED MMIO, IDY=tape cell
+001E  C4 00         STORE   R0, [IDX]
+0020  CC 03         LOADI_L 0x03            ; UART status
+0022  C1 00         LOAD    R1, [IDX]
+0024  59 01         CMPI    R1, 1
+0026  E8 FA         BRNZ    uart_wait
+0028  CC 02         LOADI_L 0x02            ; UART TX data
+002A  40 4B         LOADI   R0, 'K'
+002C  C4 00         STORE   R0, [IDX]
+002E  04 00         HALT
