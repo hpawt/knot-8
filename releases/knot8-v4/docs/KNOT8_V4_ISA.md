@@ -1,38 +1,40 @@
-# Knot-8 v4 명령어 집합 명세
+# Knot-8 v4 Instruction Set Architecture
 
-이 문서는 `knot8_core.v`에 구현된 Knot-8 v4의 프로그래머 관점
-명세다. Knot-8은 기존 RISC8 v1/v2와 Knot-8 v3 opcode를 유지하면서 C와
-작은 interpreter에 필요한 stack-relative access, 두 포인터,
-read-modify-write, carry/borrow, shift/rotate, signed branch를 제공한다.
+This document specifies the programmer-visible behavior of Knot-8 v4 as
+implemented by `knot8_core.v`. The architecture provides stack-relative
+access, two address pointers, read-modify-write memory operations,
+carry/borrow propagation, shifts and rotates, and signed branches for C
+compilers and small interpreters.
 
-## 1. 기본 구조
+## 1. Core architecture
 
-- 데이터 폭: 8비트
-- 주소 폭: 16비트, byte addressing
-- 명령어 폭: 고정 16비트
-- 범용 레지스터: `R0`, `R1`, `R2`, `R3`
-- 특수 레지스터: `PC`, `SP`, `IDX`, `IDY` 각 16비트
-- 상태 레지스터: `FLAG` 8비트
-- 리셋 벡터: `0x0000`
-- 리셋 직후 `SP`: `0xC000`
-- 리셋 직후 `IDX`, `IDY`, `R0`-`R3`, `FLAG`: 0
-- 스택: 낮은 주소 방향으로 성장
-- 정의되지 않은 opcode: 부작용 없는 `NOP`
-- `HALT`: reset 또는 UART loader가 CPU를 다시 시작할 때까지 정지
+- Data width: 8 bits
+- Address width: 16 bits, byte addressed
+- Instruction width: fixed 16 bits
+- General-purpose registers: `R0`, `R1`, `R2`, `R3`
+- Special registers: 16-bit `PC`, `SP`, `IDX`, `IDY`
+- Status register: 8-bit `FLAG`
+- Reset vector: `0x0000`
+- Initial `SP`: `0xC000`
+- Initial `IDX`, `IDY`, `R0`-`R3`, and `FLAG`: zero
+- Stack growth: toward lower addresses
+- Undefined opcodes: side-effect-free `NOP`
+- `HALT`: stops the CPU until reset or a UART loader restart
 
-CPU 주소 공간은 하나이지만 현재 보드 구현은 4KiB program RAM과
-16KiB data/tape/stack RAM을 서로 다른 M9K 블록에 배치한다.
+The CPU has a unified address space. The current board implementation places
+4 KiB of program RAM and 16 KiB of data/tape/stack RAM in separate M9K
+blocks.
 
-## 2. 바이트 순서와 명령어 인코딩
+## 2. Byte order and instruction encoding
 
-명령어는 메모리에 high byte 먼저 저장한다.
+Instructions are stored most-significant byte first:
 
 ```text
 memory[PC]     = instruction[15:8]
 memory[PC + 1] = instruction[7:0]
 ```
 
-기본 필드는 다음과 같다.
+The instruction formats are:
 
 ```text
 15          10 9       8 7       6 5                   0
@@ -45,79 +47,88 @@ memory[PC + 1] = instruction[7:0]
 +--------------+---------+--------------------------------+
 ```
 
-레지스터 번호는 `00=R0`, `01=R1`, `10=R2`, `11=R3`이다. v1 호환
-인코딩 때문에 `PUSH`와 `STORE`의 source register는 `Rs` 필드에
-들어간다. 나머지 한 레지스터 명령은 `Rd` 필드를 사용한다.
+Register numbers are `00=R0`, `01=R1`, `10=R2`, and `11=R3`. For encoding
+compatibility, the source register of `PUSH` and `STORE` occupies the `Rs`
+field. Other single-register instructions use the `Rd` field.
 
-명령어는 byte-aligned이며 짝수/홀수 어느 주소에서도 시작할 수 있다.
-CPU가 `PC`와 `PC+1`을 각각 fetch하므로 홀수 주소에 성능 또는 기능상
-불이익이 없다. assembler의 `.align power_of_two[, fill_byte]`는
-table이나 함수에 명시적 정렬이 필요할 때만 사용한다. `.word`는
-명령어와 같은 big-endian 순서를 사용하지만 C 데이터 객체는 ABI에
-따라 little-endian이다.
+Instructions are byte-aligned and may begin at either even or odd addresses.
+The CPU fetches `PC` and `PC+1` separately, so odd addresses have no
+functional or performance penalty. Use assembler directive
+`.align power_of_two[, fill_byte]` only when a table or function requires
+explicit alignment. `.word` uses the same big-endian order as instructions;
+C data objects are little-endian as defined by the ABI.
 
-## 3. 상태 플래그
+## 3. Status flags
 
-| 비트 | 이름 | 의미 |
+| Bit | Name | Meaning |
 |---:|---|---|
-| 0 | `Z` | 결과가 0 |
-| 1 | `C` | 덧셈 carry 또는 뺄셈 borrow |
-| 2 | `N` | 결과의 bit 7 |
-| 3 | `V` | 2의 보수 signed overflow |
-| 7:4 | - | 항상 0으로 기록 |
+| 0 | `Z` | Result is zero |
+| 1 | `C` | Addition carry or subtraction borrow |
+| 2 | `N` | Bit 7 of the result |
+| 3 | `V` | Two's-complement signed overflow |
+| 7:4 | - | Always written as zero |
 
-`SUB`, `SUBI`, `SBC`, `SBCI`, `CMP`, `CMPI`, `CPC`, `CPCI`에서
-`C=1`은 borrow가 발생했다는 뜻이다. 따라서 `SBC`는
-`Rd = Rd - Rs - C`이고 `SBCI`는 `Rd = Rd - imm8 - C`이다.
+For `SUB`, `SUBI`, `SBC`, `SBCI`, `CMP`, `CMPI`, `CPC`, and `CPCI`, `C=1`
+means that a borrow occurred. Therefore:
 
-다음 명령이 `Z/C/N/V`를 갱신한다.
+```text
+SBC  : Rd = Rd - Rs   - C
+SBCI : Rd = Rd - imm8 - C
+```
+
+The following instructions update `Z/C/N/V`:
 
 - `LOADI`, `MOV`
-- 모든 `ADD/ADC/SUB/SBC/CMP` register 및 immediate 형식
+- All register and immediate forms of `ADD/ADC/SUB/SBC/CMP`
 - `CPC`, `CPCI`
-- `AND/OR/XOR` register 및 immediate 형식
+- All register and immediate forms of `AND/OR/XOR`
 - `SHL`, `SHR`, `SAR`, `ROL`, `ROR`
 - `INC_MEM`
 
-논리 연산, `LOADI`, `MOV`는 `C=0`, `V=0`으로 만든다. `CMP`와
-`CMPI`는 뺄셈 플래그만 만들고 레지스터는 바꾸지 않는다. `CPC`와
-`CPCI`도 레지스터를 바꾸지 않으며 이전 borrow를 입력으로 사용한다.
-이 두 명령의 `Z`는 `old_Z AND (current_result == 0)`인 sticky 값이다.
-따라서 low byte의 `CMP/CMPI` 뒤에 high byte의 `CPC/CPCI`를 연결하면
-마지막 `Z`는 전체 다중 byte 값의 equality를 나타낸다. `INC_MEM`을
-제외한 load/store, stack, pointer, branch 명령은 플래그를 보존한다.
+Logical operations, `LOADI`, and `MOV` clear `C` and `V`. `CMP` and `CMPI`
+update subtraction flags without changing a register. `CPC` and `CPCI` also
+preserve their operands and consume the previous borrow. Their zero flag is
+sticky:
 
-`SHL`과 `ROL`의 `V`는 이전 bit 7과 새 bit 7의 XOR이다. `SHR`,
-`SAR`, `ROR`는 `V=0`으로 만든다. shift/rotate의 `C`에는 밖으로
-밀려난 비트가 들어간다.
+```text
+Z_new = Z_old AND (current_result == 0)
+```
 
-## 4. 명령어
+A low-byte `CMP`/`CMPI` followed by high-byte `CPC`/`CPCI` operations
+therefore leaves `Z` set only when the entire multi-byte value is equal.
+Loads, stores, stack operations, pointer operations, and branches preserve
+flags, except for `INC_MEM`.
 
-표에서 `s8`은 `-128..127`, `u8`은 `0..255`, `rel8`은 다음 명령어를
-기준으로 한 signed byte offset이다.
+For `SHL` and `ROL`, `V` is the XOR of the old and new bit 7. `SHR`, `SAR`,
+and `ROR` clear `V`. The bit shifted out is written to `C`.
 
-### 4.1 제어 및 스택
+## 4. Instructions
 
-| Opcode | 어셈블리 | 동작 |
+In the tables below, `s8` is `-128..127`, `u8` is `0..255`, and `rel8` is a
+signed byte offset relative to the instruction following the branch.
+
+### 4.1 Control and stack
+
+| Opcode | Assembly | Operation |
 |---:|---|---|
-| `00` | `NOP` | 부작용 없이 다음 명령 |
-| `01` | `HALT` | CPU 정지 |
-| `02` | `SWAPXY` | `IDX`와 `IDY`를 교환 |
-| `03` | `RET` | stack에서 return address low, high를 읽어 복귀 |
+| `00` | `NOP` | Continue with no side effects |
+| `01` | `HALT` | Stop the CPU |
+| `02` | `SWAPXY` | Exchange `IDX` and `IDY` |
+| `03` | `RET` | Pop return address low, then high, and return |
 | `04` | `PUSH Rs` | `SP--`, `[SP]=Rs` |
 | `05` | `POP Rd` | `Rd=[SP]`, `SP++` |
 | `06` | `ADJSP s8` | `SP = SP + sign_extend(s8)` |
 | `07` | `LEASP s8` | `IDX = SP + sign_extend(s8)` |
 | `0E` | `PUSHI u8` | `SP--`, `[SP]=u8` |
 
-### 4.2 IDX, IDY와 포인터
+### 4.2 IDX, IDY, and pointer operations
 
-일반 memory 명령은 활성 pointer인 `IDX`를 사용한다. `SWAPXY`는
-`IDX`와 보조 pointer `IDY`를 한 명령으로 교환한다. 예를 들어
-interpreter는 source pointer와 tape pointer를 각각 보존하면서 필요한
-쪽만 활성화할 수 있다.
+Memory instructions use `IDX` as the active address pointer. `SWAPXY`
+exchanges it with auxiliary pointer `IDY` in one instruction. An interpreter
+can keep source and tape pointers in the two registers and activate either
+one as needed.
 
-| Opcode | 어셈블리 | 동작 |
+| Opcode | Assembly | Operation |
 |---:|---|---|
 | `08` | `SETIDX_H Rn` | `IDX[15:8]=Rn` |
 | `09` | `SETIDX_L Rn` | `IDX[7:0]=Rn` |
@@ -128,32 +139,33 @@ interpreter는 source pointer와 tape pointer를 각각 보존하면서 필요�
 | `34` | `INC_IDX` | `IDX++` |
 | `35` | `DEC_IDX` | `IDX--` |
 | `1D` | `ADJIDX s8` | `IDX += sign_extend(s8)` |
-| `02` | `SWAPXY` | `IDX`와 `IDY` 교환 |
+| `02` | `SWAPXY` | Exchange `IDX` and `IDY` |
 
-### 4.3 메모리
+### 4.3 Memory
 
-| Opcode | 어셈블리 | 동작 |
+| Opcode | Assembly | Operation |
 |---:|---|---|
 | `30` | `LOAD Rd, [IDX]` | `Rd=[IDX]` |
 | `31` | `STORE Rs, [IDX]` | `[IDX]=Rs` |
-| `0C` | `LOAD_INC Rd` | `Rd=[IDX]`, 그 뒤 `IDX++` |
-| `0D` | `STORE_INC Rs` | `[IDX]=Rs`, 그 뒤 `IDX++` |
+| `0C` | `LOAD_INC Rd` | `Rd=[IDX]`, then `IDX++` |
+| `0D` | `STORE_INC Rs` | `[IDX]=Rs`, then `IDX++` |
 | `17` | `LOADSP Rd, s8` | `Rd=[SP+sign_extend(s8)]` |
 | `18` | `STORESP Rs, s8` | `[SP+sign_extend(s8)]=Rs` |
 | `1B` | `LOADX Rd, s8` | `Rd=[IDX+sign_extend(s8)]` |
 | `1C` | `STOREX Rs, s8` | `[IDX+sign_extend(s8)]=Rs` |
-| `0F` | `INC_MEM` 또는 `INC_MEM [IDX]` | `[IDX]++`, 결과 플래그 갱신 |
+| `0F` | `INC_MEM` or `INC_MEM [IDX]` | `[IDX]++`, update result flags |
 
-일반 memory load는 플래그를 바꾸지 않는다. `INC_MEM`은 byte를
-read-modify-write하고 ADD와 같은 `Z/C/N/V`를 만든다. `0xFF`는
-`0x00`으로 wrap하며 `C=1`, `0x7F`는 `0x80`이 되며 `V=1`이다.
-`LOAD_INC`와 `STORE_INC`는
-byte 배열 순회, `LOADSP/STORESP`는 함수의 local/argument 접근,
-`LOADX/STOREX`는 구조체와 포인터 기반 접근을 위한 명령이다.
+Ordinary loads do not change flags. `INC_MEM` performs a byte
+read-modify-write and produces the same flags as addition. `0xFF` wraps to
+`0x00` with `C=1`; `0x7F` becomes `0x80` with `V=1`.
+
+`LOAD_INC` and `STORE_INC` support byte-array traversal.
+`LOADSP`/`STORESP` access locals and arguments, while `LOADX`/`STOREX`
+support structures and pointer-based access.
 
 ### 4.4 Immediate ALU
 
-| Opcode | 어셈블리 | 동작 |
+| Opcode | Assembly | Operation |
 |---:|---|---|
 | `10` | `LOADI Rd, u8` | `Rd=u8` |
 | `11` | `ADDI Rd, u8` | `Rd=Rd+u8` |
@@ -161,132 +173,136 @@ byte 배열 순회, `LOADSP/STORESP`는 함수의 local/argument 접근,
 | `13` | `ANDI Rd, u8` | `Rd=Rd AND u8` |
 | `14` | `ORI Rd, u8` | `Rd=Rd OR u8` |
 | `15` | `XORI Rd, u8` | `Rd=Rd XOR u8` |
-| `16` | `CMPI Rd, u8` | `Rd-u8`의 플래그만 기록 |
+| `16` | `CMPI Rd, u8` | Set flags from `Rd-u8` |
 | `19` | `ADCI Rd, u8` | `Rd=Rd+u8+C` |
 | `1A` | `SBCI Rd, u8` | `Rd=Rd-u8-C` |
-| `1E` | `CPCI Rd, u8` | `Rd-u8-C`, register 보존, sticky `Z` |
+| `1E` | `CPCI Rd, u8` | Flags from `Rd-u8-C`; preserve register; sticky `Z` |
 
-`u8` 필드는 byte pattern이므로 어셈블러는 편의를 위해
-`-128..255`를 허용한다.
+The `u8` field is a byte pattern. For convenience, the assembler accepts
+values in the range `-128..255`.
 
 ### 4.5 Register ALU
 
-| Opcode | 어셈블리 | 동작 |
+| Opcode | Assembly | Operation |
 |---:|---|---|
 | `20` | `ADD Rd, Rs` | `Rd=Rd+Rs` |
 | `21` | `SUB Rd, Rs` | `Rd=Rd-Rs` |
 | `22` | `AND Rd, Rs` | `Rd=Rd AND Rs` |
 | `23` | `OR Rd, Rs` | `Rd=Rd OR Rs` |
 | `24` | `XOR Rd, Rs` | `Rd=Rd XOR Rs` |
-| `25` | `CMP Rd, Rs` | `Rd-Rs`의 플래그만 기록 |
+| `25` | `CMP Rd, Rs` | Set flags from `Rd-Rs` |
 | `26` | `MOV Rd, Rs` | `Rd=Rs` |
 | `27` | `ADC Rd, Rs` | `Rd=Rd+Rs+C` |
 | `28` | `SBC Rd, Rs` | `Rd=Rd-Rs-C` |
-| `2E` | `CPC Rd, Rs` | `Rd-Rs-C`, register 보존, sticky `Z` |
+| `2E` | `CPC Rd, Rs` | Flags from `Rd-Rs-C`; preserve registers; sticky `Z` |
 
-16비트 덧셈은 low byte에 `ADD`, high byte에 `ADC`를 사용한다. 16비트
-뺄셈은 low byte에 `SUB`, high byte에 `SBC`를 사용한다.
+For 16-bit addition, use `ADD` on the low byte and `ADC` on the high byte.
+For 16-bit subtraction, use `SUB` on the low byte and `SBC` on the high byte.
 
-다중 byte 비교는 반드시 little-endian 순서, 즉 low byte부터 수행한다.
+Multi-byte comparisons must proceed in little-endian order, from the low byte
+to the high byte:
 
 ```asm
         CMP     a_low,  b_low
         CPC     a_high, b_high
 ```
 
-32비트 비교는 `CPC`를 세 번 이어 붙인다. 최종 `Z`는 전체 equality,
-`C`는 unsigned borrow, `N XOR V`는 signed less-than을 뜻한다.
-따라서 `==`, `!=`, `<`, `>=`, `>`, `<=`가 모두 같은 compare chain의
-최종 플래그를 사용한다. 상수 0과의 16/32비트 zero test는 low byte에
-`CMPI Rd,0`, 나머지 byte에 `CPCI Rd,0`을 사용한다.
+A 32-bit comparison appends three `CPC` instructions after the initial
+`CMP`. The final `Z` represents full equality, `C` represents unsigned
+borrow, and `N XOR V` represents signed less-than. The same comparison chain
+therefore supports `==`, `!=`, `<`, `>=`, `>`, and `<=`.
 
-### 4.6 Shift와 rotate
+For a 16- or 32-bit zero test, use `CMPI Rd,0` on the low byte and
+`CPCI Rd,0` on each remaining byte.
 
-| Opcode | 어셈블리 | 동작 |
+### 4.6 Shifts and rotates
+
+| Opcode | Assembly | Operation |
 |---:|---|---|
-| `29` | `SHL Rd` | 논리 왼쪽 shift, bit 7을 `C`로 |
-| `2A` | `SHR Rd` | 논리 오른쪽 shift, bit 0을 `C`로 |
-| `2B` | `SAR Rd` | 부호 보존 오른쪽 shift, bit 0을 `C`로 |
-| `2C` | `ROL Rd` | `C`를 bit 0으로 넣어 왼쪽 rotate |
-| `2D` | `ROR Rd` | `C`를 bit 7로 넣어 오른쪽 rotate |
+| `29` | `SHL Rd` | Logical left shift; old bit 7 to `C` |
+| `2A` | `SHR Rd` | Logical right shift; old bit 0 to `C` |
+| `2B` | `SAR Rd` | Arithmetic right shift; old bit 0 to `C` |
+| `2C` | `ROL Rd` | Shift left through carry |
+| `2D` | `ROR Rd` | Shift right through carry |
 
-`ROL/ROR`는 carry를 포함한 9비트 rotate다. 여러 byte 값을 shift할 때
-첫 byte에 `SHL/SHR`, 이어지는 byte에 `ROL/ROR`를 조합한다.
+`ROL` and `ROR` rotate through the carry flag and therefore operate on a
+9-bit value. For multi-byte shifts, combine `SHL`/`SHR` on the first byte
+with `ROL`/`ROR` on subsequent bytes.
 
-### 4.7 분기와 호출
+### 4.7 Branches and calls
 
-| Opcode | 어셈블리 | 조건 또는 동작 |
+| Opcode | Assembly | Condition or operation |
 |---:|---|---|
 | `36` | `JUMP` | `PC=IDX` |
-| `37` | `CALL` | 다음 PC를 stack에 high, low 순으로 push하고 `PC=IDX` |
-| `38` | `JUMP_REL rel8` | 항상 상대 분기 |
+| `37` | `CALL` | Push next PC high, then low; set `PC=IDX` |
+| `38` | `JUMP_REL rel8` | Unconditional relative branch |
 | `39` | `BRZ rel8` | `Z=1` |
 | `3A` | `BRNZ rel8` | `Z=0` |
 | `3B` | `BRC rel8` | `C=1` |
 | `3C` | `BRNC rel8` | `C=0` |
-| `3D` | `BRLT rel8` | signed less-than: `N XOR V` |
-| `3E` | `BRGE rel8` | signed greater-or-equal: `NOT(N XOR V)` |
-| `3F` | `BRGT rel8` | signed greater-than: `NOT Z AND NOT(N XOR V)` |
+| `3D` | `BRLT rel8` | Signed less-than: `N XOR V` |
+| `3E` | `BRGE rel8` | Signed greater-or-equal: `NOT(N XOR V)` |
+| `3F` | `BRGT rel8` | Signed greater-than: `NOT Z AND NOT(N XOR V)` |
 
-상대 분기의 target은 다음과 같다.
+Relative branches use:
 
 ```text
 target = PC + 2 + sign_extend(rel8)
 ```
 
-범위는 다음 명령어에서 `-128..+127` byte다. 더 먼 분기는 반대 조건의
-짧은 분기와 `LOADI_H`, `LOADI_L`, `JUMP` 조합으로 만든다.
+The range is `-128..+127` bytes from the following instruction. A longer
+conditional branch can invert the condition to skip a
+`LOADI_H`/`LOADI_L`/`JUMP` sequence.
 
-Unsigned 비교에서는 `CMP/CMPI` 또는 완성된 `CPC/CPCI` chain 뒤의
-`BRC`가 unsigned less-than, `BRNC`가 unsigned greater-or-equal이다.
-unsigned greater-than은 `Z=0 AND C=0`, unsigned less-or-equal은
-`Z=1 OR C=1`로 판단한다.
+After `CMP`/`CMPI` or a complete `CPC`/`CPCI` chain, `BRC` means unsigned
+less-than and `BRNC` means unsigned greater-or-equal. Unsigned greater-than
+is `Z=0 AND C=0`; unsigned less-or-equal is `Z=1 OR C=1`.
 
-## 5. 현재 보드 메모리 맵
+## 5. Board memory map
 
-| 주소 | 크기 | 기능 |
+| Address | Size | Function |
 |---:|---:|---|
-| `0000-0FFF` | 4096 B | 프로그램/데이터 RAM, UART loader 기록 대상 |
-| `8000-BFFF` | 16384 B | compiler global/data, tp2b tape, stack RAM |
-| `FF00` | 1 B | LED 출력/읽기, 하위 4비트 |
-| `FF01` | 1 B | 버튼 입력 `{6'b0,S4_n,S3_n}` |
-| `FF02` | 1 B | UART TX data, ready일 때 write |
-| `FF03` | 1 B | UART TX status, bit 0이 ready |
-| 나머지 | - | 읽기 `00`, 쓰기 무시 |
+| `0000-0FFF` | 4096 B | Program/data RAM written by the UART loader |
+| `8000-BFFF` | 16384 B | Compiler globals/data, TP2B tape, and stack RAM |
+| `FF00` | 1 B | LED output/readback, low four bits |
+| `FF01` | 1 B | Button input `{6'b0,S4_n,S3_n}` |
+| `FF02` | 1 B | UART TX data; write when ready |
+| `FF03` | 1 B | UART TX status; bit 0 is ready |
+| Other | - | Reads return `00`; writes are ignored |
 
-프로그램 RAM은 CPU도 쓸 수 있다. 두 RAM 모두 byte 단위이며 hardware
-범위 검사, stack overflow 검사, execute 권한 검사는 없다.
+The CPU may also write program RAM. Both RAMs are byte-addressed. There is no
+hardware bounds checking, stack-overflow checking, or execute permission.
 
-FPGA configuration 때 program RAM에는 내장 demo가 기록된다. S2 reset은
-program RAM을 보존한다. 반면 data/tape/stack RAM은 reset release와
-UART program upload 때 hardware scrubber가 전 영역을 0으로 만든다.
-scrub 중 CPU는 reset에 유지된다. 50MHz에서 16,384 byte 초기화에는
-16,384 clocks, 약 0.328ms가 걸린다. loader ACK는 scrub과 CRC 검증이
-모두 끝난 뒤 전송된다.
+FPGA configuration initializes program RAM with the built-in demo. S2 reset
+preserves program RAM. In contrast, the hardware scrubber clears the entire
+data/tape/stack RAM on reset release and after each UART program upload. The
+CPU remains in reset while scrubbing. At 50 MHz, clearing 16,384 bytes takes
+16,384 clocks, approximately 0.328 ms. The loader sends its ACK only after
+both CRC verification and scrubbing complete.
 
-## 6. 보드 RAM에서의 명령 사이클
+## 6. Instruction timing in board RAM
 
-50 MHz 보드의 1-cycle synchronous M9K read interface에서 다음
-instruction 시작까지 필요한 클록 수다.
+The following counts are measured from one instruction start to the next
+using the board's 50 MHz, one-cycle synchronous M9K read interface.
 
-| 종류 | 클록 |
+| Class | Clocks |
 |---|---:|
 | ALU, compare, branch, pointer, `NOP` | 6 |
-| store, `PUSH`, `PUSHI` | 8 |
-| load, `POP` | 9 |
+| Store, `PUSH`, `PUSHI` | 8 |
+| Load, `POP` | 9 |
 | `INC_MEM` | 10 |
 | `CALL` | 9 |
 | `RET` | 11 |
 
-메모리 구현이 `mem_read_valid`를 늦게 내면 CPU는 read state에서 그만큼
-더 기다린다. `HALT`는 무기한 실행 state에 머문다.
+If a memory implementation asserts `mem_read_valid` later, the CPU waits in
+its read state for the additional cycles. `HALT` remains in the execute state
+indefinitely.
 
-## 7. 이전 버전 호환성
+## 7. Encoding compatibility
 
-- RISC8 v1/v2와 Knot-8 v3에서 정의된 모든 opcode encoding을 유지한다.
-- 기존 `programs/counter.asm`은 v2/v3/v4에서 byte-for-byte 동일하다.
-- v3에서 opcode `02`와 `0F`가 각각 `SWAPXY`, `INC_MEM`이 되었다.
-- initial `SP`와 board data/stack RAM 영역은 v3에서 변경됐다.
-- v4에서 opcode `1E`와 `2E`가 각각 `CPCI`, `CPC`가 되었다.
-- v4는 data RAM reset/upload scrub과 byte-aligned instruction을 명시한다.
-- UART loader의 새 magic은 `K8`이지만 기존 `R8` packet도 받는다.
+- All opcode encodings defined before v4 remain unchanged.
+- `programs/counter.asm` assembles byte-for-byte identically.
+- Opcodes `02` and `0F` are `SWAPXY` and `INC_MEM`.
+- Opcodes `1E` and `2E` are `CPCI` and `CPC`.
+- v4 defines data-RAM scrubbing and byte-aligned instruction fetch.
+- The UART loader accepts the `K8` packet magic and the earlier `R8` magic.
