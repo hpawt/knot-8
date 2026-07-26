@@ -52,9 +52,9 @@ python .\tools\knot8asm.py .\programs\knot8_v4_demo.asm `
 `tools/knot8asm.py` is a two-pass assembler with labels, expressions, `.equ`,
 `.byte`, `.word`, and `.align`.
 
-## TP2B
+## tp2b
 
-`tools/tp2bc.py` compiles TP2B programs for Knot-8. Its default `packed`
+`tools/tp2bc.py` compiles tp2b programs for Knot-8. Its default `packed`
 backend stores instructions as 2-bit bytecode. The FSM, tape, loop scanning,
 and output all execute on the FPGA.
 
@@ -66,7 +66,7 @@ python .\tools\tp2bc.py .\tp2b\examples\hello_worlda.tp `
   -Port COM6 -CaptureOutput
 ```
 
-A 7,847-command TP2B program was verified on the physical board:
+A 7,847-command tp2b program was verified on the physical board:
 
 ```text
 Hello, World!
@@ -89,7 +89,7 @@ The test suite covers:
 - Stack, memory, and dual address pointers
 - Board RAM, MMIO, and reset scrubbing
 - UART loading, CRC validation, and CPU restart
-- The assembler and TP2B compiler
+- The assembler and tp2b compiler
 
 ## FPGA build
 
@@ -120,5 +120,5 @@ The verified v4 build uses 1,398 logic elements and 20 M9K blocks, reaches
 | `docs/` | ISA and ABI documentation |
 | `programs/` | Example programs |
 | `tools/knot8asm.py` | Assembler |
-| `tools/tp2bc.py` | TP2B compiler |
+| `tools/tp2bc.py` | tp2b compiler |
 | `upload_program.ps1` | UART uploader |
